@@ -39,10 +39,8 @@ function doPost(e) {
   }
 }
 
-// Phase 5 スタブ
-function handleLineWebhook(e) { return ContentService.createTextOutput('OK'); }
-function handleWeChatWebhook(e) { return ContentService.createTextOutput('OK'); }
-function handleWhatsAppWebhook(e) { return ContentService.createTextOutput('OK'); }
+// Phase 5: Webhookハンドラーは WebhookHandlers.gs に実装済み
+// handleLineWebhook(e), handleWeChatWebhook(e), handleWhatsAppWebhook(e)
 
 // HTML include ヘルパー
 function include(filename) {

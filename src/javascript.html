@@ -108,13 +108,26 @@ function handleLogout() {
 }
 
 // === ルーティング ===
+// (navigate is defined below after getPageTitle)
+
+function getPageTitle(page) {
+  const titles = {
+    dashboard: 'ダッシュボード', accounts: '勘定科目マスタ', partners: '取引先マスタ',
+    bankAccounts: '口座マスタ', pettyCash: '小口現金', settings: '設定',
+    users: 'ユーザー管理', logs: '操作ログ',
+    employees: '従業員マスタ', attendance: '出退勤一覧',
+    attendanceSummary: '月次集計', attendanceCsv: 'CSV入出力',
+    attendanceSettings: '勤怠設定'
+  };
+  return titles[page] || '';
+}
+
+// === ルーティング ===
 App.navigate = function(page) {
   this.currentPage = page;
-  // ナビゲーションのアクティブ状態
   document.querySelectorAll('.sidebar-nav a').forEach(a => {
     a.classList.toggle('active', a.dataset.page === page);
   });
-  // ページ切り替え
   const body = document.getElementById('page-body');
   body.innerHTML = '<div class="loading"><div class="spinner"></div>読み込み中...</div>';
   document.getElementById('page-title').textContent = getPageTitle(page);
@@ -128,18 +141,14 @@ App.navigate = function(page) {
     case 'settings': renderSettings(); break;
     case 'users': renderUsers(); break;
     case 'logs': renderLogs(); break;
+    case 'employees': renderEmployees(); break;
+    case 'attendance': renderAttendance(); break;
+    case 'attendanceSummary': renderAttendanceSummary(); break;
+    case 'attendanceCsv': renderAttendanceCsv(); break;
+    case 'attendanceSettings': renderAttendanceSettingsPage(); break;
     default: body.innerHTML = '<div class="empty-state"><p>準備中</p></div>';
   }
 };
-
-function getPageTitle(page) {
-  const titles = {
-    dashboard: 'ダッシュボード', accounts: '勘定科目マスタ', partners: '取引先マスタ',
-    bankAccounts: '口座マスタ', pettyCash: '小口現金', settings: '設定',
-    users: 'ユーザー管理', logs: '操作ログ'
-  };
-  return titles[page] || '';
-}
 
 // === トースト ===
 function showToast(message, type = 'success') {
@@ -823,6 +832,504 @@ function filterTable(tableId, inputId, colIdx) {
     const text = tr.cells[colIdx]?.textContent.toLowerCase() || '';
     tr.style.display = !q || text.includes(q) ? '' : 'none';
   });
+}
+
+// ============================================================
+// 従業員マスタ
+// ============================================================
+async function renderEmployees() {
+  const body = document.getElementById('page-body');
+  try {
+    const res = await callApi('getEmployees');
+    if (!res.success) { body.innerHTML = `<p>${res.error}</p>`; return; }
+    body.innerHTML = `
+      <div class="toolbar">
+        <input type="text" class="search-input" id="emp-search" placeholder="従業員名で検索..." oninput="filterTable('emp-table','emp-search',1)">
+        <div class="spacer"></div>
+        <button class="btn btn-primary" onclick="showEmployeeModal()">＋ 従業員追加</button>
+      </div>
+      <div class="card"><div class="card-body no-pad"><div class="table-wrapper">
+        <table id="emp-table">
+          <thead><tr><th>ID</th><th>従業員名</th><th>所属</th><th>雇用形態</th><th>時給/月給</th><th>メインアプリ</th><th>登録コード</th><th>状態</th><th></th></tr></thead>
+          <tbody>
+            ${res.data.length === 0 ? '<tr><td colspan="9" class="text-center" style="padding:32px;color:var(--gray-400)">従業員が登録されていません</td></tr>' :
+              res.data.map(e => `<tr>
+                <td class="text-mono">${e.id}</td><td>${e.name}</td><td>${e.department||'-'}</td>
+                <td>${e.employmentType}</td>
+                <td class="text-mono">${e.hourlyRate ? '¥'+Number(e.hourlyRate).toLocaleString()+'/h' : e.monthlyRate ? '¥'+Number(e.monthlyRate).toLocaleString()+'/月' : '-'}</td>
+                <td>${e.mainApp||'未連携'}</td>
+                <td class="text-mono" style="user-select:all">${e.registrationCode||'-'}</td>
+                <td>${e.active!==false&&e.active!=='FALSE'?'<span class="badge badge-active">有効</span>':'<span class="badge badge-inactive">無効</span>'}</td>
+                <td>
+                  <div class="btn-group">
+                    <button class="btn btn-secondary btn-sm" onclick='showEmployeeModal(${JSON.stringify(e).replace(/'/g,"&#39;")})'>編集</button>
+                    <button class="btn btn-secondary btn-sm" onclick="regenCode('${e.id}')" title="登録コード再発行">🔄</button>
+                  </div>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div></div></div>`;
+  } catch (e) { body.innerHTML = '<p>読み込みエラー</p>'; }
+}
+
+function showEmployeeModal(data) {
+  const e = !!data;
+  const html = `
+    <div class="modal-header"><h3>${e?'従業員 編集':'従業員 追加'}</h3><button class="modal-close" onclick="closeModal('modal-overlay')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>従業員名<span class="required">*</span></label><input class="form-control" id="emp-name" value="${e?data.name:''}"></div>
+        <div class="form-group"><label>カナ</label><input class="form-control" id="emp-kana" value="${e?(data.nameKana||''):''}"></div>
+      </div>
+      <div class="form-row-3">
+        <div class="form-group"><label>所属</label><input class="form-control" id="emp-dept" value="${e?(data.department||''):''}"></div>
+        <div class="form-group"><label>雇用形態<span class="required">*</span></label><select class="form-control" id="emp-type">${['正社員','パート','アルバイト','業務委託'].map(t=>`<option ${e&&data.employmentType===t?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="form-group"><label>メインアプリ</label><select class="form-control" id="emp-app"><option value="">未設定</option>${['LINE','WeChat','WhatsApp'].map(t=>`<option ${e&&data.mainApp===t?'selected':''}>${t}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>時給（円）</label><input type="number" class="form-control" id="emp-hourly" value="${e?(data.hourlyRate||''):''}"></div>
+        <div class="form-group"><label>月給（円）</label><input type="number" class="form-control" id="emp-monthly" value="${e?(data.monthlyRate||''):''}"></div>
+      </div>
+      ${e?`<div class="form-row">
+        <div class="form-group"><label>LINE UserID</label><input class="form-control" id="emp-line" value="${data.lineUserId||''}"></div>
+        <div class="form-group"><label>WhatsApp電話番号</label><input class="form-control" id="emp-wa" value="${data.whatsappPhone||''}" placeholder="+819012345678"></div>
+      </div>`:''}
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-overlay')">キャンセル</button>
+      <button class="btn btn-primary" onclick="saveEmployee(${e?`'${data.id}'`:'null'})">保存</button>
+    </div>`;
+  document.getElementById('modal-content').innerHTML = html;
+  openModal('modal-overlay');
+}
+
+async function saveEmployee(editId) {
+  const d = {
+    name: document.getElementById('emp-name').value.trim(),
+    nameKana: document.getElementById('emp-kana').value.trim(),
+    department: document.getElementById('emp-dept').value.trim(),
+    employmentType: document.getElementById('emp-type').value,
+    mainApp: document.getElementById('emp-app').value,
+    hourlyRate: document.getElementById('emp-hourly').value||'',
+    monthlyRate: document.getElementById('emp-monthly').value||''
+  };
+  if (editId) {
+    const lineEl = document.getElementById('emp-line');
+    const waEl = document.getElementById('emp-wa');
+    if (lineEl) d.lineUserId = lineEl.value.trim();
+    if (waEl) d.whatsappPhone = waEl.value.trim();
+  }
+  try {
+    const res = editId ? await callApi('updateEmployee', editId, d) : await callApi('addEmployee', d);
+    if (res.success) {
+      closeModal('modal-overlay');
+      let msg = editId ? '更新しました' : '追加しました';
+      if (res.registrationCode) msg += `\n登録コード: ${res.registrationCode}`;
+      showToast(msg);
+      renderEmployees();
+    } else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+async function regenCode(empId) {
+  if (!confirm('登録コードを再発行しますか？\n既存のコードは無効になります。')) return;
+  try {
+    const res = await callApi('regenerateRegistrationCode', empId);
+    if (res.success) {
+      showToast(`新しい登録コード: ${res.registrationCode}`);
+      renderEmployees();
+    } else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+// ============================================================
+// 出退勤一覧
+// ============================================================
+async function renderAttendance() {
+  const body = document.getElementById('page-body');
+  try {
+    const now = new Date();
+    const defaultMonth = `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')}`;
+    const [attRes, empRes] = await Promise.all([
+      callApi('getAttendanceData', { month: defaultMonth }),
+      callApi('getEmployeeList')
+    ]);
+    App.cache.employeeList = empRes.success ? empRes.data : [];
+    const records = attRes.success ? attRes.data : [];
+
+    const empOptions = '<option value="">全員</option>' + App.cache.employeeList.map(e => `<option value="${e.id}">${e.name}</option>`).join('');
+    const statusColors = { '正常':'', '打刻漏れ':'background:#fef3c7', '修正済':'background:#dbeafe', '欠勤':'background:#fee2e2' };
+
+    body.innerHTML = `
+      <div class="toolbar">
+        <input type="month" class="form-control" style="width:auto" id="att-month" value="${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}" onchange="refreshAttendance()">
+        <select class="form-control" style="width:auto" id="att-emp-filter" onchange="refreshAttendance()">${empOptions}</select>
+        <div class="spacer"></div>
+        <button class="btn btn-secondary" onclick="showManualPunchModal()">🖊 手動打刻</button>
+      </div>
+      <div class="card"><div class="card-body no-pad"><div class="table-wrapper">
+        <table id="att-table">
+          <thead><tr>
+            <th>日付</th><th>従業員</th><th>出勤</th><th>退勤</th><th>休憩</th>
+            <th class="text-right">実働</th><th class="text-right">残業</th><th class="text-right">深夜</th>
+            <th>ステータス</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${records.length === 0 ? '<tr><td colspan="10" class="text-center" style="padding:32px;color:var(--gray-400)">データがありません</td></tr>' :
+              records.map(r => `<tr style="${statusColors[r.status]||''}">
+                <td>${r.date}</td><td>${r.employeeName}</td>
+                <td class="text-mono">${r.clockIn||'--:--'}</td>
+                <td class="text-mono">${r.clockOut||'--:--'}</td>
+                <td class="text-mono">${fmtMin(r.totalBreak)}</td>
+                <td class="text-right text-mono">${fmtMin(r.actualWork)}</td>
+                <td class="text-right text-mono">${r.overtime>0?fmtMin(r.overtime):'-'}</td>
+                <td class="text-right text-mono">${r.nightWork>0?fmtMin(r.nightWork):'-'}</td>
+                <td>${statusBadge(r.status)}${r.modified===true||r.modified==='TRUE'?' 📝':''}</td>
+                <td><button class="btn btn-secondary btn-sm" onclick='showAttendanceEditModal(${JSON.stringify(r).replace(/'/g,"&#39;")})'>修正</button></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div></div></div>`;
+  } catch (e) { body.innerHTML = '<p>読み込みエラー</p>'; console.error(e); }
+}
+
+function fmtMin(m) { if (!m&&m!==0) return '-'; const n=Number(m); return `${Math.floor(n/60)}:${String(n%60).padStart(2,'0')}`; }
+function statusBadge(s) {
+  const colors = { '正常':'badge-active', '打刻漏れ':'badge-admin', '修正済':'badge-editor', '欠勤':'badge-inactive' };
+  return `<span class="badge ${colors[s]||''}">${s||'-'}</span>`;
+}
+
+async function refreshAttendance() {
+  const month = document.getElementById('att-month').value.replace('-','/');
+  const empId = document.getElementById('att-emp-filter').value;
+  const filters = { month };
+  if (empId) filters.employeeId = empId;
+  const body = document.getElementById('page-body');
+  // Re-render with new filters
+  try {
+    const res = await callApi('getAttendanceData', filters);
+    const records = res.success ? res.data : [];
+    const tbody = document.querySelector('#att-table tbody');
+    if (!tbody) { renderAttendance(); return; }
+    const statusColors = { '正常':'', '打刻漏れ':'background:#fef3c7', '修正済':'background:#dbeafe', '欠勤':'background:#fee2e2' };
+    tbody.innerHTML = records.length === 0 ? '<tr><td colspan="10" class="text-center" style="padding:32px;color:var(--gray-400)">データがありません</td></tr>' :
+      records.map(r => `<tr style="${statusColors[r.status]||''}">
+        <td>${r.date}</td><td>${r.employeeName}</td>
+        <td class="text-mono">${r.clockIn||'--:--'}</td><td class="text-mono">${r.clockOut||'--:--'}</td>
+        <td class="text-mono">${fmtMin(r.totalBreak)}</td>
+        <td class="text-right text-mono">${fmtMin(r.actualWork)}</td>
+        <td class="text-right text-mono">${r.overtime>0?fmtMin(r.overtime):'-'}</td>
+        <td class="text-right text-mono">${r.nightWork>0?fmtMin(r.nightWork):'-'}</td>
+        <td>${statusBadge(r.status)}${r.modified===true||r.modified==='TRUE'?' 📝':''}</td>
+        <td><button class="btn btn-secondary btn-sm" onclick='showAttendanceEditModal(${JSON.stringify(r).replace(/'/g,"&#39;")})'>修正</button></td>
+      </tr>`).join('');
+  } catch(e) { console.error(e); }
+}
+
+function showAttendanceEditModal(r) {
+  const html = `
+    <div class="modal-header"><h3>出退勤修正</h3><button class="modal-close" onclick="closeModal('modal-overlay')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>日付</label><input class="form-control" value="${r.date}" readonly></div>
+        <div class="form-group"><label>従業員</label><input class="form-control" value="${r.employeeName}" readonly></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>出勤時刻</label><input class="form-control" id="ae-in" value="${r.clockIn||''}" placeholder="HH:mm"></div>
+        <div class="form-group"><label>退勤時刻</label><input class="form-control" id="ae-out" value="${r.clockOut||''}" placeholder="HH:mm"></div>
+      </div>
+      <div class="form-row-3">
+        <div class="form-group"><label>休憩1 開始</label><input class="form-control" id="ae-b1s" value="${r.break1Start||''}"></div>
+        <div class="form-group"><label>休憩1 終了</label><input class="form-control" id="ae-b1e" value="${r.break1End||''}"></div>
+        <div class="form-group"><label>ステータス</label><select class="form-control" id="ae-status">${['正常','打刻漏れ','修正済','欠勤'].map(s=>`<option ${r.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>休憩2 開始</label><input class="form-control" id="ae-b2s" value="${r.break2Start||''}"></div>
+        <div class="form-group"><label>休憩2 終了</label><input class="form-control" id="ae-b2e" value="${r.break2End||''}"></div>
+      </div>
+      <div class="form-group"><label>備考</label><input class="form-control" id="ae-note" value="${r.note||''}"></div>
+      <div class="form-group"><label>修正理由<span class="required">*</span></label><input class="form-control" id="ae-reason" placeholder="修正理由を入力してください"></div>
+      ${r.modified===true||r.modified==='TRUE'?`<div class="form-hint">前回修正: ${r.modifiedBy} (${r.modifiedAt}) - ${r.modifyReason}</div>`:''}
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-overlay')">キャンセル</button>
+      <button class="btn btn-primary" onclick="saveAttendanceEdit('${r.id}')">保存</button>
+    </div>`;
+  document.getElementById('modal-content').innerHTML = html;
+  openModal('modal-overlay');
+}
+
+async function saveAttendanceEdit(recordId) {
+  const d = {
+    clockIn: document.getElementById('ae-in').value.trim(),
+    clockOut: document.getElementById('ae-out').value.trim(),
+    break1Start: document.getElementById('ae-b1s').value.trim(),
+    break1End: document.getElementById('ae-b1e').value.trim(),
+    break2Start: document.getElementById('ae-b2s').value.trim(),
+    break2End: document.getElementById('ae-b2e').value.trim(),
+    status: document.getElementById('ae-status').value,
+    note: document.getElementById('ae-note').value.trim(),
+    modifyReason: document.getElementById('ae-reason').value.trim()
+  };
+  if (!d.modifyReason) { showToast('修正理由を入力してください', 'error'); return; }
+  try {
+    const res = await callApi('updateAttendanceRecord_admin', recordId, d);
+    if (res.success) { closeModal('modal-overlay'); showToast('修正しました'); refreshAttendance(); }
+    else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+function showManualPunchModal() {
+  const empOptions = (App.cache.employeeList||[]).map(e => `<option value="${e.id}">${e.name}</option>`).join('');
+  const html = `
+    <div class="modal-header"><h3>手動打刻</h3><button class="modal-close" onclick="closeModal('modal-overlay')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>従業員<span class="required">*</span></label><select class="form-control" id="mp-emp">${empOptions}</select></div>
+        <div class="form-group"><label>打刻種別<span class="required">*</span></label><select class="form-control" id="mp-type">${['出勤','退勤','休憩開始','休憩終了'].map(t=>`<option>${t}</option>`).join('')}</select></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-overlay')">キャンセル</button>
+      <button class="btn btn-primary" onclick="executeManualPunch()">打刻実行</button>
+    </div>`;
+  document.getElementById('modal-content').innerHTML = html;
+  openModal('modal-overlay');
+}
+
+async function executeManualPunch() {
+  const empId = document.getElementById('mp-emp').value;
+  const punchType = document.getElementById('mp-type').value;
+  try {
+    const res = await callApi('manualPunch', empId, punchType);
+    if (res.success) { closeModal('modal-overlay'); showToast(res.message||'打刻しました'); refreshAttendance(); }
+    else showToast(res.error||res.message, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+// ============================================================
+// 月次集計
+// ============================================================
+async function renderAttendanceSummary() {
+  const body = document.getElementById('page-body');
+  const now = new Date();
+  const defaultMonth = `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')}`;
+  try {
+    const res = await callApi('getMonthlyAttendanceSummary', { month: defaultMonth });
+    if (!res.success) { body.innerHTML = `<p>${res.error}</p>`; return; }
+    const summaries = res.data;
+    body.innerHTML = `
+      <div class="toolbar">
+        <input type="month" class="form-control" style="width:auto" id="sum-month" value="${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}" onchange="refreshSummary()">
+      </div>
+      <div class="card"><div class="card-body no-pad"><div class="table-wrapper">
+        <table id="sum-table">
+          <thead><tr><th>従業員</th><th class="text-right">出勤日数</th><th class="text-right">総実働</th><th class="text-right">総休憩</th><th class="text-right">総残業</th><th class="text-right">深夜</th><th class="text-right">打刻漏れ</th></tr></thead>
+          <tbody>
+            ${summaries.length === 0 ? '<tr><td colspan="7" class="text-center" style="padding:32px;color:var(--gray-400)">データがありません</td></tr>' :
+              summaries.map(s => `<tr>
+                <td>${s.employeeName}</td>
+                <td class="text-right">${s.days}日</td>
+                <td class="text-right text-mono">${fmtMin(s.totalWork)}</td>
+                <td class="text-right text-mono">${fmtMin(s.totalBreak)}</td>
+                <td class="text-right text-mono">${s.totalOvertime>0?fmtMin(s.totalOvertime):'-'}</td>
+                <td class="text-right text-mono">${s.totalNight>0?fmtMin(s.totalNight):'-'}</td>
+                <td class="text-right">${s.punchMissing>0?'<span style="color:var(--danger)">'+s.punchMissing+'件</span>':'-'}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div></div></div>`;
+  } catch (e) { body.innerHTML = '<p>読み込みエラー</p>'; }
+}
+
+async function refreshSummary() {
+  const month = document.getElementById('sum-month').value.replace('-','/');
+  try {
+    const res = await callApi('getMonthlyAttendanceSummary', { month });
+    const summaries = res.success ? res.data : [];
+    const tbody = document.querySelector('#sum-table tbody');
+    if (!tbody) return;
+    tbody.innerHTML = summaries.length === 0 ? '<tr><td colspan="7" class="text-center" style="padding:32px;color:var(--gray-400)">データがありません</td></tr>' :
+      summaries.map(s => `<tr>
+        <td>${s.employeeName}</td><td class="text-right">${s.days}日</td>
+        <td class="text-right text-mono">${fmtMin(s.totalWork)}</td>
+        <td class="text-right text-mono">${fmtMin(s.totalBreak)}</td>
+        <td class="text-right text-mono">${s.totalOvertime>0?fmtMin(s.totalOvertime):'-'}</td>
+        <td class="text-right text-mono">${s.totalNight>0?fmtMin(s.totalNight):'-'}</td>
+        <td class="text-right">${s.punchMissing>0?'<span style="color:var(--danger)">'+s.punchMissing+'件</span>':'-'}</td>
+      </tr>`).join('');
+  } catch(e) { console.error(e); }
+}
+
+// ============================================================
+// CSV入出力
+// ============================================================
+async function renderAttendanceCsv() {
+  const body = document.getElementById('page-body');
+  const now = new Date();
+  body.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+      <!-- エクスポート -->
+      <div class="card">
+        <div class="card-header"><h3>📤 CSVエクスポート</h3></div>
+        <div class="card-body">
+          <div class="form-group"><label>対象月</label><input type="month" class="form-control" id="csv-exp-month" value="${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}"></div>
+          <div class="form-actions" style="border:none;padding-top:0">
+            <button class="btn btn-secondary" onclick="downloadCsvTemplate()">テンプレート</button>
+            <button class="btn btn-primary" onclick="exportCsv()">CSVダウンロード</button>
+          </div>
+        </div>
+      </div>
+      <!-- インポート -->
+      <div class="card">
+        <div class="card-header"><h3>📥 CSVインポート</h3></div>
+        <div class="card-body">
+          <div class="form-group">
+            <label>CSVファイル</label>
+            <input type="file" class="form-control" id="csv-file" accept=".csv">
+          </div>
+          <div class="form-actions" style="border:none;padding-top:0">
+            <button class="btn btn-secondary" onclick="validateCsvFile()">検証</button>
+            <button class="btn btn-primary" onclick="importCsvFile()" id="csv-import-btn" disabled>インポート実行</button>
+          </div>
+          <div id="csv-validation-result" style="margin-top:12px"></div>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function exportCsv() {
+  const month = document.getElementById('csv-exp-month').value.replace('-','/');
+  try {
+    const res = await callApi('exportAttendanceCsv', { month });
+    if (res.success) {
+      downloadText(res.csv, `勤怠データ_${month.replace('/','-')}.csv`);
+      showToast(`${res.count}件エクスポートしました`);
+    } else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+async function downloadCsvTemplate() {
+  try {
+    const res = await callApi('getAttendanceCsvTemplate');
+    if (res.success) downloadText(res.csv, '勤怠データ_テンプレート.csv');
+    else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+function downloadText(text, filename) {
+  const bom = '\uFEFF';
+  const blob = new Blob([bom + text], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function validateCsvFile() {
+  const file = document.getElementById('csv-file').files[0];
+  if (!file) { showToast('ファイルを選択してください', 'error'); return; }
+  const resultEl = document.getElementById('csv-validation-result');
+  resultEl.innerHTML = '<div class="loading"><div class="spinner"></div>検証中...</div>';
+
+  const text = await file.text();
+  try {
+    const res = await callApi('validateAttendanceCsv', text);
+    if (!res.success) { resultEl.innerHTML = `<p style="color:var(--danger)">${res.error}</p>`; return; }
+    let html = `<p>全${res.totalRows}行: ✅ ${res.validRows}行OK`;
+    if (res.errorRows > 0) {
+      html += ` / ❌ ${res.errorRows}行エラー`;
+      html += '<ul style="margin-top:8px;font-size:12px;color:var(--danger)">';
+      res.errors.slice(0,10).forEach(e => { html += `<li>行${e.row}: ${e.errors.join(', ')}</li>`; });
+      html += '</ul>';
+    }
+    html += '</p>';
+    resultEl.innerHTML = html;
+    document.getElementById('csv-import-btn').disabled = res.errorRows > 0;
+    App.cache.csvText = text;
+  } catch (e) { resultEl.innerHTML = '<p style="color:var(--danger)">検証エラー</p>'; }
+}
+
+async function importCsvFile() {
+  if (!App.cache.csvText) { showToast('先にCSVを検証してください', 'error'); return; }
+  if (!confirm('インポートを実行しますか？\n既存データは上書きされます。')) return;
+  try {
+    const res = await callApi('importAttendanceCsv', App.cache.csvText);
+    if (res.success) {
+      showToast(`完了: 追加${res.added}件 / 更新${res.updated}件`);
+      App.cache.csvText = null;
+      document.getElementById('csv-import-btn').disabled = true;
+    } else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+// ============================================================
+// 勤怠設定
+// ============================================================
+async function renderAttendanceSettingsPage() {
+  const body = document.getElementById('page-body');
+  try {
+    const res = await callApi('getAttendanceSettingsApi');
+    if (!res.success) { body.innerHTML = `<p>${res.error}</p>`; return; }
+    const s = res.data;
+    body.innerHTML = `
+      <div class="card">
+        <div class="card-header"><h3>勤怠計算設定</h3></div>
+        <div class="card-body">
+          <div class="form-row">
+            <div class="form-group"><label>所定労働時間（分/日）</label><input type="number" class="form-control att-setting" data-key="working_hours" value="${s.working_hours||480}"></div>
+            <div class="form-group"><label>所定休憩時間（分/日）</label><input type="number" class="form-control att-setting" data-key="break_time" value="${s.break_time||60}"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>残業計算基準</label><select class="form-control att-setting" data-key="overtime_basis">${['所定超過','法定超過'].map(t=>`<option ${s.overtime_basis===t?'selected':''}>${t}</option>`).join('')}</select></div>
+            <div class="form-group"><label>締め日</label><select class="form-control att-setting" data-key="closing_day">${['月末','15日','20日','25日'].map(t=>`<option ${s.closing_day===t?'selected':''}>${t}</option>`).join('')}</select></div>
+          </div>
+          <div class="form-row-3">
+            <div class="form-group"><label>深夜時間帯 開始</label><input class="form-control att-setting" data-key="night_start" value="${s.night_start||'22:00'}"></div>
+            <div class="form-group"><label>深夜時間帯 終了</label><input class="form-control att-setting" data-key="night_end" value="${s.night_end||'05:00'}"></div>
+            <div class="form-group"><label>打刻丸め</label><select class="form-control att-setting" data-key="rounding">${['なし','15分単位切り捨て','15分単位四捨五入'].map(t=>`<option ${s.rounding===t?'selected':''}>${t}</option>`).join('')}</select></div>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" onclick="saveAttendanceSettings()">設定を保存</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:20px">
+        <div class="card-header"><h3>メッセージアプリ連携設定</h3></div>
+        <div class="card-body">
+          <p style="color:var(--gray-500);font-size:13px;margin-bottom:16px">
+            以下のAPIキーはGASの「プロジェクトの設定」→「スクリプト プロパティ」で設定してください。Webアプリ画面には保存されません。
+          </p>
+          <div class="form-group"><label>Webhook URL</label><input class="form-control" id="webhook-url" readonly value="デプロイ後にURLが表示されます" onclick="this.select()">
+            <div class="form-hint">各メッセージアプリに ?source=line / ?source=whatsapp / ?source=wechat を付けて登録</div>
+          </div>
+          <table style="font-size:13px;margin-top:12px">
+            <thead><tr><th>プロパティ名</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td class="text-mono">LINE_CHANNEL_ACCESS_TOKEN</td><td>LINE Messaging APIのチャネルアクセストークン</td></tr>
+              <tr><td class="text-mono">LINE_CHANNEL_SECRET</td><td>LINE チャネルシークレット（署名検証用）</td></tr>
+              <tr><td class="text-mono">WHATSAPP_ACCESS_TOKEN</td><td>Meta Cloud APIアクセストークン</td></tr>
+              <tr><td class="text-mono">WHATSAPP_PHONE_NUMBER_ID</td><td>WhatsApp電話番号ID</td></tr>
+              <tr><td class="text-mono">WHATSAPP_VERIFY_TOKEN</td><td>Webhook検証トークン（任意の文字列）</td></tr>
+              <tr><td class="text-mono">WECHAT_TOKEN</td><td>WeChat公式アカウントのToken</td></tr>
+              <tr><td class="text-mono">WECHAT_APPID</td><td>WeChat AppID</td></tr>
+              <tr><td class="text-mono">WECHAT_APPSECRET</td><td>WeChat AppSecret</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  } catch (e) { body.innerHTML = '<p>読み込みエラー</p>'; }
+}
+
+async function saveAttendanceSettings() {
+  const settings = {};
+  document.querySelectorAll('.att-setting').forEach(el => { settings[el.dataset.key] = el.value; });
+  try {
+    const res = await callApi('updateAttendanceSettings', settings);
+    if (res.success) showToast('勤怠設定を保存しました');
+    else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
 }
 
 // === 初期化 ===
