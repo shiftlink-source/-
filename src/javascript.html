@@ -1,0 +1,830 @@
+<script>
+// ============================================================
+// 経理入力システム v2.0 - クライアントサイド
+// ============================================================
+
+// === 状態管理 ===
+const App = {
+  token: null,
+  user: null,
+  currentPage: 'dashboard',
+  cache: {},
+
+  init() {
+    this.token = sessionStorage.getItem('token');
+    const userStr = sessionStorage.getItem('user');
+    if (userStr) this.user = JSON.parse(userStr);
+    if (this.token && this.user) {
+      this.validateAndStart();
+    } else {
+      this.showLogin();
+    }
+  },
+
+  validateAndStart() {
+    google.script.run
+      .withSuccessHandler(res => {
+        if (res.valid) {
+          this.user = res.user;
+          this.showApp();
+        } else {
+          this.clearSession();
+          this.showLogin();
+        }
+      })
+      .withFailureHandler(() => { this.showLogin(); })
+      .validateSession(this.token);
+  },
+
+  setSession(token, user) {
+    this.token = token;
+    this.user = user;
+    sessionStorage.setItem('token', token);
+    sessionStorage.setItem('user', JSON.stringify(user));
+  },
+
+  clearSession() {
+    this.token = null;
+    this.user = null;
+    sessionStorage.removeItem('token');
+    sessionStorage.removeItem('user');
+    this.cache = {};
+  },
+
+  showLogin() {
+    document.getElementById('login-page').style.display = 'flex';
+    document.getElementById('app').style.display = 'none';
+  },
+
+  showApp() {
+    document.getElementById('login-page').style.display = 'none';
+    const app = document.getElementById('app');
+    app.style.display = 'flex';
+    document.getElementById('user-display-name').textContent = this.user.userName;
+    document.getElementById('user-display-role').textContent =
+      this.user.role === 'admin' ? '管理者' : this.user.role === 'editor' ? '編集者' : '閲覧者';
+    // 管理者メニューの表示制御
+    document.querySelectorAll('.admin-only').forEach(el => {
+      el.style.display = this.user.role === 'admin' ? '' : 'none';
+    });
+    this.navigate('dashboard');
+  }
+};
+
+// === ログイン ===
+function handleLogin(e) {
+  e.preventDefault();
+  const userId = document.getElementById('login-userid').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  const btn = document.getElementById('login-btn');
+  errEl.textContent = '';
+  btn.disabled = true;
+  btn.textContent = 'ログイン中...';
+
+  google.script.run
+    .withSuccessHandler(res => {
+      btn.disabled = false;
+      btn.textContent = 'ログイン';
+      if (res.success) {
+        App.setSession(res.token, res.user);
+        App.showApp();
+      } else {
+        errEl.textContent = res.error;
+      }
+    })
+    .withFailureHandler(err => {
+      btn.disabled = false;
+      btn.textContent = 'ログイン';
+      errEl.textContent = 'システムエラーが発生しました';
+    })
+    .login(userId, password);
+}
+
+function handleLogout() {
+  google.script.run.logout(App.token);
+  App.clearSession();
+  App.showLogin();
+}
+
+// === ルーティング ===
+App.navigate = function(page) {
+  this.currentPage = page;
+  // ナビゲーションのアクティブ状態
+  document.querySelectorAll('.sidebar-nav a').forEach(a => {
+    a.classList.toggle('active', a.dataset.page === page);
+  });
+  // ページ切り替え
+  const body = document.getElementById('page-body');
+  body.innerHTML = '<div class="loading"><div class="spinner"></div>読み込み中...</div>';
+  document.getElementById('page-title').textContent = getPageTitle(page);
+
+  switch (page) {
+    case 'dashboard': renderDashboard(); break;
+    case 'accounts': renderAccounts(); break;
+    case 'partners': renderPartners(); break;
+    case 'bankAccounts': renderBankAccounts(); break;
+    case 'pettyCash': renderPettyCash(); break;
+    case 'settings': renderSettings(); break;
+    case 'users': renderUsers(); break;
+    case 'logs': renderLogs(); break;
+    default: body.innerHTML = '<div class="empty-state"><p>準備中</p></div>';
+  }
+};
+
+function getPageTitle(page) {
+  const titles = {
+    dashboard: 'ダッシュボード', accounts: '勘定科目マスタ', partners: '取引先マスタ',
+    bankAccounts: '口座マスタ', pettyCash: '小口現金', settings: '設定',
+    users: 'ユーザー管理', logs: '操作ログ'
+  };
+  return titles[page] || '';
+}
+
+// === トースト ===
+function showToast(message, type = 'success') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.innerHTML = `${type === 'success' ? '✓' : type === 'error' ? '✕' : '⚠'} ${message}`;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 3500);
+}
+
+// === モーダル ===
+function openModal(id) { document.getElementById(id).classList.add('show'); }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+// === API呼び出しヘルパー ===
+function callApi(funcName, ...args) {
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(resolve)
+      .withFailureHandler(reject)
+      [funcName](App.token, ...args);
+  });
+}
+
+// ============================================================
+// ダッシュボード
+// ============================================================
+async function renderDashboard() {
+  const body = document.getElementById('page-body');
+  try {
+    const res = await callApi('getDashboardData');
+    if (!res.success) { body.innerHTML = `<p>${res.error}</p>`; return; }
+    const d = res.data;
+    body.innerHTML = `
+      <div class="stats-grid">
+        <div class="stat-card primary">
+          <div class="stat-label">勘定科目数</div>
+          <div class="stat-value">${d.accountCount}</div>
+          <div class="stat-sub">有効な科目</div>
+        </div>
+        <div class="stat-card success">
+          <div class="stat-label">取引先数</div>
+          <div class="stat-value">${d.partnerCount}</div>
+          <div class="stat-sub">有効な取引先</div>
+        </div>
+        <div class="stat-card warning">
+          <div class="stat-label">口座数</div>
+          <div class="stat-value">${d.bankAccountCount}</div>
+          <div class="stat-sub">登録口座</div>
+        </div>
+        <div class="stat-card ${d.pettyCashBalance >= 0 ? 'primary' : 'danger'}">
+          <div class="stat-label">小口現金残高</div>
+          <div class="stat-value text-mono">¥${Number(d.pettyCashBalance || 0).toLocaleString()}</div>
+          <div class="stat-sub">今月: 入金¥${Number(d.monthlyPettyCashIn || 0).toLocaleString()} / 出金¥${Number(d.monthlyPettyCashOut || 0).toLocaleString()}</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><h3>直近の小口現金取引</h3></div>
+        <div class="card-body no-pad">
+          ${d.recentPettyCash && d.recentPettyCash.length > 0 ? `
+            <div class="table-wrapper">
+              <table>
+                <thead><tr><th>日付</th><th>摘要</th><th class="text-right">入金</th><th class="text-right">出金</th><th class="text-right">残高</th></tr></thead>
+                <tbody>
+                  ${d.recentPettyCash.map(r => `
+                    <tr>
+                      <td>${r.date}</td><td>${r.summary}</td>
+                      <td class="text-right text-mono">${r.inAmount ? '¥' + Number(r.inAmount).toLocaleString() : ''}</td>
+                      <td class="text-right text-mono">${r.outAmount ? '¥' + Number(r.outAmount).toLocaleString() : ''}</td>
+                      <td class="text-right text-mono">¥${Number(r.balance).toLocaleString()}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          ` : '<div class="empty-state"><div class="icon">📋</div><p>取引データがありません</p></div>'}
+        </div>
+      </div>`;
+  } catch (e) {
+    body.innerHTML = '<p>データの読み込みに失敗しました。</p>';
+  }
+}
+
+// ============================================================
+// 勘定科目マスタ
+// ============================================================
+async function renderAccounts() {
+  const body = document.getElementById('page-body');
+  try {
+    const res = await callApi('getAccounts');
+    if (!res.success) { body.innerHTML = `<p>${res.error}</p>`; return; }
+    const accounts = res.data;
+    const categories = ['資産', '負債', '純資産', '収益', '費用'];
+
+    body.innerHTML = `
+      <div class="toolbar">
+        <input type="text" class="search-input" id="account-search" placeholder="科目コード・名前で検索..." oninput="filterAccountTable()">
+        <select class="form-control" style="width:auto" id="account-category-filter" onchange="filterAccountTable()">
+          <option value="">全カテゴリ</option>
+          ${categories.map(c => `<option>${c}</option>`).join('')}
+        </select>
+        <div class="spacer"></div>
+        <button class="btn btn-primary" onclick="showAccountModal()">＋ 科目追加</button>
+      </div>
+      <div class="card">
+        <div class="card-body no-pad">
+          <div class="table-wrapper">
+            <table id="accounts-table">
+              <thead><tr>
+                <th>科目コード</th><th>科目名</th><th>カテゴリ</th><th>補助科目</th><th>税区分</th><th>状態</th><th></th>
+              </tr></thead>
+              <tbody>
+                ${accounts.map(a => `
+                  <tr data-code="${a.code}" data-cat="${a.category}" data-name="${a.name}" class="${a.active === false || a.active === 'FALSE' ? 'inactive-row' : ''}">
+                    <td class="text-mono">${a.code}</td>
+                    <td>${a.name}</td>
+                    <td>${a.category}</td>
+                    <td>${a.subAccount || '-'}</td>
+                    <td>${a.taxType}</td>
+                    <td>${a.active !== false && a.active !== 'FALSE' ? '<span class="badge badge-active">有効</span>' : '<span class="badge badge-inactive">無効</span>'}</td>
+                    <td><button class="btn btn-secondary btn-sm" onclick='showAccountModal(${JSON.stringify(a).replace(/'/g,"&#39;")})'>編集</button></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>`;
+  } catch (e) {
+    body.innerHTML = '<p>読み込みエラー</p>';
+  }
+}
+
+function filterAccountTable() {
+  const q = document.getElementById('account-search').value.toLowerCase();
+  const cat = document.getElementById('account-category-filter').value;
+  document.querySelectorAll('#accounts-table tbody tr').forEach(tr => {
+    const code = tr.dataset.code?.toLowerCase() || '';
+    const name = tr.dataset.name?.toLowerCase() || '';
+    const rowCat = tr.dataset.cat || '';
+    const matchSearch = !q || code.includes(q) || name.includes(q);
+    const matchCat = !cat || rowCat === cat;
+    tr.style.display = matchSearch && matchCat ? '' : 'none';
+  });
+}
+
+function showAccountModal(data) {
+  const isEdit = !!data;
+  const html = `
+    <div class="modal-header">
+      <h3>${isEdit ? '勘定科目 編集' : '勘定科目 追加'}</h3>
+      <button class="modal-close" onclick="closeModal('modal-overlay')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label>科目コード<span class="required">*</span></label>
+          <input class="form-control" id="acc-code" value="${isEdit ? data.code : ''}" ${isEdit ? 'readonly' : ''} placeholder="例: 1010">
+        </div>
+        <div class="form-group">
+          <label>科目名<span class="required">*</span></label>
+          <input class="form-control" id="acc-name" value="${isEdit ? data.name : ''}" placeholder="例: 現金">
+        </div>
+      </div>
+      <div class="form-row-3">
+        <div class="form-group">
+          <label>カテゴリ<span class="required">*</span></label>
+          <select class="form-control" id="acc-category">
+            ${['資産','負債','純資産','収益','費用'].map(c => `<option ${isEdit && data.category === c ? 'selected' : ''}>${c}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>補助科目</label>
+          <input class="form-control" id="acc-sub" value="${isEdit ? (data.subAccount || '') : ''}">
+        </div>
+        <div class="form-group">
+          <label>税区分</label>
+          <select class="form-control" id="acc-tax">
+            ${['対象外','課税売上10%','課税売上8%(軽減)','課税仕入10%','課税仕入8%(軽減)','非課税','不課税'].map(t => `<option ${isEdit && data.taxType === t ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>表示順</label>
+          <input class="form-control" type="number" id="acc-order" value="${isEdit ? (data.order || '') : ''}">
+        </div>
+        ${isEdit ? `<div class="form-group"><label>有効</label><select class="form-control" id="acc-active"><option value="true" ${data.active !== false ? 'selected' : ''}>有効</option><option value="false" ${data.active === false || data.active === 'FALSE' ? 'selected' : ''}>無効</option></select></div>` : ''}
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-overlay')">キャンセル</button>
+      <button class="btn btn-primary" onclick="saveAccount(${isEdit ? `'${data.code}'` : 'null'})">保存</button>
+    </div>`;
+  document.getElementById('modal-content').innerHTML = html;
+  openModal('modal-overlay');
+}
+
+async function saveAccount(editCode) {
+  const accountData = {
+    code: document.getElementById('acc-code').value.trim(),
+    name: document.getElementById('acc-name').value.trim(),
+    category: document.getElementById('acc-category').value,
+    subAccount: document.getElementById('acc-sub').value.trim(),
+    taxType: document.getElementById('acc-tax').value,
+    order: Number(document.getElementById('acc-order').value) || 9999,
+    active: editCode ? document.getElementById('acc-active')?.value === 'true' : true
+  };
+  try {
+    const res = editCode
+      ? await callApi('updateAccount', editCode, accountData)
+      : await callApi('addAccount', accountData);
+    if (res.success) {
+      closeModal('modal-overlay');
+      showToast(editCode ? '更新しました' : '追加しました');
+      renderAccounts();
+    } else {
+      showToast(res.error, 'error');
+    }
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+// ============================================================
+// 取引先マスタ
+// ============================================================
+async function renderPartners() {
+  const body = document.getElementById('page-body');
+  try {
+    const res = await callApi('getPartners');
+    if (!res.success) { body.innerHTML = `<p>${res.error}</p>`; return; }
+    const partners = res.data;
+    body.innerHTML = `
+      <div class="toolbar">
+        <input type="text" class="search-input" id="partner-search" placeholder="取引先名で検索..." oninput="filterTable('partners-table','partner-search',1)">
+        <div class="spacer"></div>
+        <button class="btn btn-primary" onclick="showPartnerModal()">＋ 取引先追加</button>
+      </div>
+      <div class="card"><div class="card-body no-pad"><div class="table-wrapper">
+        <table id="partners-table">
+          <thead><tr><th>ID</th><th>取引先名</th><th>区分</th><th>電話番号</th><th>メール</th><th>状態</th><th></th></tr></thead>
+          <tbody>
+            ${partners.map(p => `
+              <tr>
+                <td class="text-mono">${p.id}</td><td>${p.name}</td><td>${p.type}</td>
+                <td>${p.tel || '-'}</td><td>${p.email || '-'}</td>
+                <td>${p.active !== false && p.active !== 'FALSE' ? '<span class="badge badge-active">有効</span>' : '<span class="badge badge-inactive">無効</span>'}</td>
+                <td><button class="btn btn-secondary btn-sm" onclick='showPartnerModal(${JSON.stringify(p).replace(/'/g,"&#39;")})'>編集</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div></div></div>`;
+  } catch (e) { body.innerHTML = '<p>読み込みエラー</p>'; }
+}
+
+function showPartnerModal(data) {
+  const e = !!data;
+  const html = `
+    <div class="modal-header"><h3>${e ? '取引先 編集' : '取引先 追加'}</h3><button class="modal-close" onclick="closeModal('modal-overlay')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>取引先名<span class="required">*</span></label><input class="form-control" id="pt-name" value="${e ? data.name : ''}"></div>
+        <div class="form-group"><label>カナ</label><input class="form-control" id="pt-kana" value="${e ? (data.nameKana||'') : ''}"></div>
+      </div>
+      <div class="form-row-3">
+        <div class="form-group"><label>区分<span class="required">*</span></label><select class="form-control" id="pt-type">${['売上先','仕入先','その他'].map(t=>`<option ${e&&data.type===t?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="form-group"><label>電話番号</label><input class="form-control" id="pt-tel" value="${e ? (data.tel||'') : ''}"></div>
+        <div class="form-group"><label>メール</label><input class="form-control" id="pt-email" value="${e ? (data.email||'') : ''}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>郵便番号</label><input class="form-control" id="pt-zip" value="${e ? (data.zip||'') : ''}"></div>
+        <div class="form-group"><label>住所</label><input class="form-control" id="pt-addr" value="${e ? (data.address||'') : ''}"></div>
+      </div>
+      <div class="form-row-3">
+        <div class="form-group"><label>振込先銀行</label><input class="form-control" id="pt-bank" value="${e ? (data.bankName||'') : ''}"></div>
+        <div class="form-group"><label>支店</label><input class="form-control" id="pt-branch" value="${e ? (data.bankBranch||'') : ''}"></div>
+        <div class="form-group"><label>口座番号</label><input class="form-control" id="pt-accnum" value="${e ? (data.accountNumber||'') : ''}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>インボイス登録番号</label><input class="form-control" id="pt-invoice" value="${e ? (data.invoiceNo||'') : ''}" placeholder="T1234567890123"></div>
+        <div class="form-group"><label>支払条件</label><input class="form-control" id="pt-terms" value="${e ? (data.paymentTerms||'') : ''}" placeholder="例: 月末締め翌月末払い"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-overlay')">キャンセル</button>
+      <button class="btn btn-primary" onclick="savePartner(${e ? `'${data.id}'` : 'null'})">保存</button>
+    </div>`;
+  document.getElementById('modal-content').innerHTML = html;
+  openModal('modal-overlay');
+}
+
+async function savePartner(editId) {
+  const d = {
+    name: document.getElementById('pt-name').value.trim(),
+    nameKana: document.getElementById('pt-kana').value.trim(),
+    type: document.getElementById('pt-type').value,
+    tel: document.getElementById('pt-tel').value.trim(),
+    email: document.getElementById('pt-email').value.trim(),
+    zip: document.getElementById('pt-zip').value.trim(),
+    address: document.getElementById('pt-addr').value.trim(),
+    bankName: document.getElementById('pt-bank').value.trim(),
+    bankBranch: document.getElementById('pt-branch').value.trim(),
+    accountNumber: document.getElementById('pt-accnum').value.trim(),
+    invoiceNo: document.getElementById('pt-invoice').value.trim(),
+    paymentTerms: document.getElementById('pt-terms').value.trim()
+  };
+  try {
+    const res = editId ? await callApi('updatePartner', editId, d) : await callApi('addPartner', d);
+    if (res.success) { closeModal('modal-overlay'); showToast(editId ? '更新しました' : '追加しました'); renderPartners(); }
+    else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+// ============================================================
+// 口座マスタ
+// ============================================================
+async function renderBankAccounts() {
+  const body = document.getElementById('page-body');
+  try {
+    const res = await callApi('getBankAccounts');
+    if (!res.success) { body.innerHTML = `<p>${res.error}</p>`; return; }
+    body.innerHTML = `
+      <div class="toolbar"><div class="spacer"></div><button class="btn btn-primary" onclick="showBankAccountModal()">＋ 口座追加</button></div>
+      <div class="card"><div class="card-body no-pad"><div class="table-wrapper">
+        <table>
+          <thead><tr><th>ID</th><th>金融機関</th><th>支店</th><th>種別</th><th>口座番号</th><th>名義</th><th>CSVフォーマット</th><th>状態</th><th></th></tr></thead>
+          <tbody>
+            ${res.data.map(b => `
+              <tr>
+                <td class="text-mono">${b.id}</td><td>${b.bankName}</td><td>${b.branchName || '-'}</td>
+                <td>${b.accountType}</td><td class="text-mono">${b.accountNumber || '-'}</td>
+                <td>${b.accountHolder || '-'}</td><td>${b.csvFormat || '-'}</td>
+                <td>${b.active !== false && b.active !== 'FALSE' ? '<span class="badge badge-active">有効</span>' : '<span class="badge badge-inactive">無効</span>'}</td>
+                <td><button class="btn btn-secondary btn-sm" onclick='showBankAccountModal(${JSON.stringify(b).replace(/'/g,"&#39;")})'>編集</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div></div></div>`;
+  } catch (e) { body.innerHTML = '<p>読み込みエラー</p>'; }
+}
+
+function showBankAccountModal(data) {
+  const e = !!data;
+  const html = `
+    <div class="modal-header"><h3>${e ? '口座 編集' : '口座 追加'}</h3><button class="modal-close" onclick="closeModal('modal-overlay')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>金融機関名<span class="required">*</span></label><input class="form-control" id="ba-bank" value="${e ? data.bankName : ''}"></div>
+        <div class="form-group"><label>支店名</label><input class="form-control" id="ba-branch" value="${e ? (data.branchName||'') : ''}"></div>
+      </div>
+      <div class="form-row-3">
+        <div class="form-group"><label>口座種別</label><select class="form-control" id="ba-type">${['普通','当座'].map(t=>`<option ${e&&data.accountType===t?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="form-group"><label>口座番号</label><input class="form-control" id="ba-num" value="${e ? (data.accountNumber||'') : ''}"></div>
+        <div class="form-group"><label>口座名義</label><input class="form-control" id="ba-holder" value="${e ? (data.accountHolder||'') : ''}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>CSVフォーマット</label><select class="form-control" id="ba-csv">${['','GMOあおぞら','住信SBI','みずほ','JCBクレカ','VISAクレカ','その他'].map(t=>`<option ${e&&data.csvFormat===t?'selected':''}>${t}</option>`).join('')}</select></div>
+        <div class="form-group"><label>用途</label><input class="form-control" id="ba-usage" value="${e ? (data.usage||'') : ''}" placeholder="例: メイン口座"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-overlay')">キャンセル</button>
+      <button class="btn btn-primary" onclick="saveBankAccount(${e ? `'${data.id}'` : 'null'})">保存</button>
+    </div>`;
+  document.getElementById('modal-content').innerHTML = html;
+  openModal('modal-overlay');
+}
+
+async function saveBankAccount(editId) {
+  const d = {
+    bankName: document.getElementById('ba-bank').value.trim(),
+    branchName: document.getElementById('ba-branch').value.trim(),
+    accountType: document.getElementById('ba-type').value,
+    accountNumber: document.getElementById('ba-num').value.trim(),
+    accountHolder: document.getElementById('ba-holder').value.trim(),
+    csvFormat: document.getElementById('ba-csv').value,
+    usage: document.getElementById('ba-usage').value.trim()
+  };
+  try {
+    const res = editId ? await callApi('updateBankAccount', editId, d) : await callApi('addBankAccount', d);
+    if (res.success) { closeModal('modal-overlay'); showToast(editId ? '更新しました' : '追加しました'); renderBankAccounts(); }
+    else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+// ============================================================
+// 小口現金
+// ============================================================
+async function renderPettyCash() {
+  const body = document.getElementById('page-body');
+  // 勘定科目と取引先リストを事前取得
+  const [pcRes, accRes, ptRes] = await Promise.all([
+    callApi('getPettyCashEntries', {}),
+    callApi('getAccountList'),
+    callApi('getPartnerList')
+  ]);
+  App.cache.accountList = accRes.success ? accRes.data : [];
+  App.cache.partnerList = ptRes.success ? ptRes.data : [];
+  const entries = pcRes.success ? pcRes.data : [];
+
+  body.innerHTML = `
+    <div class="toolbar">
+      <input type="month" class="form-control" style="width:auto" id="pc-month-filter" onchange="filterPettyCash()">
+      <div class="spacer"></div>
+      <button class="btn btn-primary" onclick="showPettyCashModal()">＋ 取引追加</button>
+    </div>
+    <div class="card"><div class="card-body no-pad"><div class="table-wrapper">
+      <table id="pettycash-table">
+        <thead><tr><th>日付</th><th>勘定科目</th><th>取引先</th><th>摘要</th><th class="text-right">入金</th><th class="text-right">出金</th><th class="text-right">残高</th><th></th></tr></thead>
+        <tbody>
+          ${entries.length === 0 ? '<tr><td colspan="8" class="text-center" style="padding:32px;color:var(--gray-400)">取引データがありません</td></tr>' :
+            entries.map(e => `
+              <tr>
+                <td>${e.date}</td><td>${e.account}</td><td>${e.partner || '-'}</td><td>${e.summary}</td>
+                <td class="text-right text-mono">${e.inAmount ? '¥'+Number(e.inAmount).toLocaleString() : ''}</td>
+                <td class="text-right text-mono">${e.outAmount ? '¥'+Number(e.outAmount).toLocaleString() : ''}</td>
+                <td class="text-right text-mono">¥${Number(e.balance).toLocaleString()}</td>
+                <td>
+                  <div class="btn-group">
+                    <button class="btn btn-secondary btn-sm" onclick='showPettyCashModal(${JSON.stringify(e).replace(/'/g,"&#39;")})'>編集</button>
+                    <button class="btn btn-danger btn-sm" onclick="deletePettyCash('${e.id}')">削除</button>
+                  </div>
+                </td>
+              </tr>
+            `).join('')}
+        </tbody>
+      </table>
+    </div></div></div>`;
+}
+
+function showPettyCashModal(data) {
+  const e = !!data;
+  const accOptions = App.cache.accountList?.map(a => `<option value="${a.name}" data-tax="${a.taxType}" ${e && data.account === a.name ? 'selected' : ''}>${a.code} ${a.name}</option>`).join('') || '';
+  const ptOptions = '<option value="">選択なし</option>' + (App.cache.partnerList?.map(p => `<option value="${p.name}" ${e && data.partner === p.name ? 'selected' : ''}>${p.name}</option>`).join('') || '');
+
+  const html = `
+    <div class="modal-header"><h3>${e ? '取引 編集' : '取引 追加'}</h3><button class="modal-close" onclick="closeModal('modal-overlay')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>日付<span class="required">*</span></label><input type="date" class="form-control" id="pc-date" value="${e ? String(data.date).replace(/\//g,'-') : new Date().toISOString().slice(0,10)}"></div>
+        <div class="form-group"><label>勘定科目<span class="required">*</span></label><select class="form-control" id="pc-account" onchange="onAccountChange()">${accOptions}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>取引先</label><select class="form-control" id="pc-partner">${ptOptions}</select></div>
+        <div class="form-group"><label>摘要<span class="required">*</span></label><input class="form-control" id="pc-summary" value="${e ? data.summary : ''}"></div>
+      </div>
+      <div class="form-row-3">
+        <div class="form-group"><label>入金額</label><input type="number" class="form-control" id="pc-in" value="${e ? (data.inAmount || '') : ''}" placeholder="0" onchange="toggleAmountField('in')"></div>
+        <div class="form-group"><label>出金額</label><input type="number" class="form-control" id="pc-out" value="${e ? (data.outAmount || '') : ''}" placeholder="0" onchange="toggleAmountField('out')"></div>
+        <div class="form-group"><label>税区分</label><select class="form-control" id="pc-tax">${['対象外','課税売上10%','課税売上8%(軽減)','課税仕入10%','課税仕入8%(軽減)','非課税','不課税'].map(t=>`<option ${e&&data.taxType===t?'selected':''}>${t}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-group"><label>備考</label><input class="form-control" id="pc-note" value="${e ? (data.note || '') : ''}"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-overlay')">キャンセル</button>
+      <button class="btn btn-primary" onclick="savePettyCash(${e ? `'${data.id}'` : 'null'})">保存</button>
+    </div>`;
+  document.getElementById('modal-content').innerHTML = html;
+  openModal('modal-overlay');
+}
+
+function toggleAmountField(type) {
+  if (type === 'in' && document.getElementById('pc-in').value) document.getElementById('pc-out').value = '';
+  if (type === 'out' && document.getElementById('pc-out').value) document.getElementById('pc-in').value = '';
+}
+
+function onAccountChange() {
+  const sel = document.getElementById('pc-account');
+  const opt = sel.options[sel.selectedIndex];
+  if (opt && opt.dataset.tax) document.getElementById('pc-tax').value = opt.dataset.tax;
+}
+
+async function savePettyCash(editId) {
+  const d = {
+    date: document.getElementById('pc-date').value.replace(/-/g, '/'),
+    account: document.getElementById('pc-account').value,
+    partner: document.getElementById('pc-partner').value,
+    summary: document.getElementById('pc-summary').value.trim(),
+    inAmount: Number(document.getElementById('pc-in').value) || 0,
+    outAmount: Number(document.getElementById('pc-out').value) || 0,
+    taxType: document.getElementById('pc-tax').value,
+    note: document.getElementById('pc-note').value.trim()
+  };
+  try {
+    const res = editId ? await callApi('updatePettyCashEntry', editId, d) : await callApi('addPettyCashEntry', d);
+    if (res.success) { closeModal('modal-overlay'); showToast(editId ? '更新しました' : '追加しました'); renderPettyCash(); }
+    else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+async function deletePettyCash(id) {
+  if (!confirm('この取引を削除しますか？')) return;
+  try {
+    const res = await callApi('deletePettyCashEntry', id);
+    if (res.success) { showToast('削除しました'); renderPettyCash(); }
+    else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+// ============================================================
+// 設定
+// ============================================================
+async function renderSettings() {
+  const body = document.getElementById('page-body');
+  try {
+    const res = await callApi('getSettings');
+    if (!res.success) { body.innerHTML = `<p>${res.error}</p>`; return; }
+    const s = res.data;
+    const fields = [
+      ['company_name', '法人名', 'text'],
+      ['company_address', '住所', 'text'],
+      ['company_tel', '電話番号', 'text'],
+      ['company_email', 'メールアドレス', 'email'],
+      ['representative', '代表者名', 'text'],
+      ['invoice_registration_no', 'インボイス登録番号', 'text'],
+      ['fiscal_year_start', '会計年度開始月', 'number'],
+      ['bank_info', '振込先情報（請求書記載用）', 'text']
+    ];
+    body.innerHTML = `
+      <div class="card">
+        <div class="card-header"><h3>法人情報・システム設定</h3></div>
+        <div class="card-body">
+          ${fields.map(f => `
+            <div class="form-group">
+              <label>${f[1]}</label>
+              <input class="form-control setting-input" type="${f[2]}" data-key="${f[0]}" value="${s[f[0]] || ''}">
+            </div>
+          `).join('')}
+          <div class="form-actions">
+            <button class="btn btn-primary" onclick="saveSettings()">設定を保存</button>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:20px">
+        <div class="card-header"><h3>パスワード変更</h3></div>
+        <div class="card-body">
+          <div class="form-group"><label>現在のパスワード</label><input class="form-control" type="password" id="pw-old"></div>
+          <div class="form-group"><label>新しいパスワード</label><input class="form-control" type="password" id="pw-new"></div>
+          <div class="form-group"><label>確認</label><input class="form-control" type="password" id="pw-confirm"></div>
+          <div class="form-actions"><button class="btn btn-primary" onclick="savePassword()">パスワード変更</button></div>
+        </div>
+      </div>`;
+  } catch (e) { body.innerHTML = '<p>読み込みエラー</p>'; }
+}
+
+async function saveSettings() {
+  const settings = {};
+  document.querySelectorAll('.setting-input').forEach(el => { settings[el.dataset.key] = el.value; });
+  try {
+    const res = await callApi('updateSettings', settings);
+    if (res.success) showToast('設定を保存しました');
+    else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+async function savePassword() {
+  const old = document.getElementById('pw-old').value;
+  const pw = document.getElementById('pw-new').value;
+  const confirm = document.getElementById('pw-confirm').value;
+  if (pw !== confirm) { showToast('新しいパスワードが一致しません', 'error'); return; }
+  try {
+    const res = await new Promise((resolve, reject) => {
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)
+        .changePassword(App.token, old, pw);
+    });
+    if (res.success) {
+      showToast('パスワードを変更しました');
+      document.getElementById('pw-old').value = '';
+      document.getElementById('pw-new').value = '';
+      document.getElementById('pw-confirm').value = '';
+    } else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+// ============================================================
+// ユーザー管理
+// ============================================================
+async function renderUsers() {
+  const body = document.getElementById('page-body');
+  try {
+    const res = await callApi('getUsers');
+    if (!res.success) { body.innerHTML = `<p>${res.error}</p>`; return; }
+    body.innerHTML = `
+      <div class="toolbar"><div class="spacer"></div><button class="btn btn-primary" onclick="showUserModal()">＋ ユーザー追加</button></div>
+      <div class="card"><div class="card-body no-pad"><div class="table-wrapper">
+        <table>
+          <thead><tr><th>ユーザーID</th><th>ユーザー名</th><th>権限</th><th>メール</th><th>最終ログイン</th><th>状態</th><th></th></tr></thead>
+          <tbody>
+            ${res.data.map(u => `
+              <tr>
+                <td class="text-mono">${u.userId}</td><td>${u.userName}</td>
+                <td><span class="badge ${u.role==='admin'?'badge-admin':'badge-editor'}">${u.role==='admin'?'管理者':u.role==='editor'?'編集者':'閲覧者'}</span></td>
+                <td>${u.email || '-'}</td><td>${u.lastLogin || '未ログイン'}</td>
+                <td>${u.active !== false && u.active !== 'FALSE' ? '<span class="badge badge-active">有効</span>' : '<span class="badge badge-inactive">無効</span>'}</td>
+                <td><button class="btn btn-secondary btn-sm" onclick='showUserModal(${JSON.stringify(u).replace(/'/g,"&#39;")})'>編集</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div></div></div>`;
+  } catch (e) { body.innerHTML = '<p>読み込みエラー</p>'; }
+}
+
+function showUserModal(data) {
+  const e = !!data;
+  const html = `
+    <div class="modal-header"><h3>${e ? 'ユーザー 編集' : 'ユーザー 追加'}</h3><button class="modal-close" onclick="closeModal('modal-overlay')">&times;</button></div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-group"><label>ユーザーID<span class="required">*</span></label><input class="form-control" id="usr-id" value="${e ? data.userId : ''}" ${e ? 'readonly' : ''}></div>
+        <div class="form-group"><label>ユーザー名<span class="required">*</span></label><input class="form-control" id="usr-name" value="${e ? data.userName : ''}"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>${e ? '新しいパスワード（変更する場合）' : 'パスワード<span class="required">*</span>'}</label><input class="form-control" type="password" id="usr-pw"></div>
+        <div class="form-group"><label>権限</label><select class="form-control" id="usr-role">${['admin','editor','viewer'].map(r=>`<option value="${r}" ${e&&data.role===r?'selected':''}>${r==='admin'?'管理者':r==='editor'?'編集者':'閲覧者'}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>メールアドレス</label><input class="form-control" id="usr-email" value="${e ? (data.email||'') : ''}"></div>
+        ${e ? `<div class="form-group"><label>状態</label><select class="form-control" id="usr-active"><option value="true" ${data.active!==false?'selected':''}>有効</option><option value="false" ${data.active===false||data.active==='FALSE'?'selected':''}>無効</option></select></div>` : ''}
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('modal-overlay')">キャンセル</button>
+      <button class="btn btn-primary" onclick="saveUser(${e ? `'${data.userId}'` : 'null'})">保存</button>
+    </div>`;
+  document.getElementById('modal-content').innerHTML = html;
+  openModal('modal-overlay');
+}
+
+async function saveUser(editId) {
+  const d = {
+    userId: document.getElementById('usr-id').value.trim(),
+    userName: document.getElementById('usr-name').value.trim(),
+    password: document.getElementById('usr-pw').value,
+    role: document.getElementById('usr-role').value,
+    email: document.getElementById('usr-email').value.trim(),
+    active: editId ? document.getElementById('usr-active')?.value === 'true' : true
+  };
+  try {
+    const res = editId ? await callApi('updateUser', editId, d) : await callApi('addUser', d);
+    if (res.success) { closeModal('modal-overlay'); showToast(editId ? '更新しました' : '追加しました'); renderUsers(); }
+    else showToast(res.error, 'error');
+  } catch (e) { showToast('エラーが発生しました', 'error'); }
+}
+
+// ============================================================
+// 操作ログ
+// ============================================================
+async function renderLogs() {
+  const body = document.getElementById('page-body');
+  try {
+    const res = await callApi('getOperationLogs', {});
+    if (!res.success) { body.innerHTML = `<p>${res.error}</p>`; return; }
+    body.innerHTML = `
+      <div class="card"><div class="card-body no-pad"><div class="table-wrapper">
+        <table>
+          <thead><tr><th>日時</th><th>ユーザー</th><th>操作</th><th>対象</th><th>詳細</th></tr></thead>
+          <tbody>
+            ${res.data.length === 0 ? '<tr><td colspan="5" class="text-center" style="padding:32px;color:var(--gray-400)">ログはありません</td></tr>' :
+              res.data.map(l => `
+                <tr>
+                  <td style="white-space:nowrap">${l['日時']}</td>
+                  <td>${l['ユーザー名'] || l['ユーザーID']}</td>
+                  <td>${l['操作種別']}</td>
+                  <td>${l['対象']}</td>
+                  <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${l['詳細']}</td>
+                </tr>
+              `).join('')}
+          </tbody>
+        </table>
+      </div></div></div>`;
+  } catch (e) { body.innerHTML = '<p>読み込みエラー</p>'; }
+}
+
+// === 汎用テーブルフィルタ ===
+function filterTable(tableId, inputId, colIdx) {
+  const q = document.getElementById(inputId).value.toLowerCase();
+  document.querySelectorAll(`#${tableId} tbody tr`).forEach(tr => {
+    const text = tr.cells[colIdx]?.textContent.toLowerCase() || '';
+    tr.style.display = !q || text.includes(q) ? '' : 'none';
+  });
+}
+
+// === 初期化 ===
+document.addEventListener('DOMContentLoaded', () => App.init());
+</script>

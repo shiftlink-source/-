@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <?!= include('Stylesheet'); ?>
+</head>
+<body>
+
+  <!-- ===== ログイン画面 ===== -->
+  <div class="login-wrapper" id="login-page">
+    <div class="login-card">
+      <h1>経理入力システム</h1>
+      <p class="subtitle">Accounting Management System v2.0</p>
+      <form onsubmit="handleLogin(event)">
+        <div class="form-group">
+          <label>ユーザーID</label>
+          <input type="text" id="login-userid" required autocomplete="username" placeholder="ユーザーIDを入力">
+        </div>
+        <div class="form-group">
+          <label>パスワード</label>
+          <input type="password" id="login-password" required autocomplete="current-password" placeholder="パスワードを入力">
+        </div>
+        <button type="submit" class="btn-login" id="login-btn">ログイン</button>
+        <div class="error-msg" id="login-error"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== メインアプリ ===== -->
+  <div class="app-wrapper" id="app">
+
+    <!-- サイドバー -->
+    <nav class="sidebar">
+      <div class="sidebar-header">
+        <h2>経理入力システム</h2>
+        <div class="company-name">v2.0</div>
+      </div>
+      <div class="sidebar-nav">
+        <div class="nav-section">メイン</div>
+        <a href="#" data-page="dashboard" onclick="App.navigate('dashboard');return false">
+          <span class="icon">📊</span>ダッシュボード
+        </a>
+
+        <div class="nav-section">取引入力</div>
+        <a href="#" data-page="pettyCash" onclick="App.navigate('pettyCash');return false">
+          <span class="icon">💰</span>小口現金
+        </a>
+
+        <div class="nav-section">マスタ管理</div>
+        <a href="#" data-page="accounts" onclick="App.navigate('accounts');return false">
+          <span class="icon">📋</span>勘定科目
+        </a>
+        <a href="#" data-page="partners" onclick="App.navigate('partners');return false">
+          <span class="icon">🏢</span>取引先
+        </a>
+        <a href="#" data-page="bankAccounts" onclick="App.navigate('bankAccounts');return false">
+          <span class="icon">🏦</span>口座
+        </a>
+
+        <div class="nav-section admin-only">管理</div>
+        <a href="#" data-page="users" onclick="App.navigate('users');return false" class="admin-only">
+          <span class="icon">👥</span>ユーザー管理
+        </a>
+        <a href="#" data-page="settings" onclick="App.navigate('settings');return false">
+          <span class="icon">⚙️</span>設定
+        </a>
+        <a href="#" data-page="logs" onclick="App.navigate('logs');return false" class="admin-only">
+          <span class="icon">📝</span>操作ログ
+        </a>
+      </div>
+      <div class="sidebar-footer">
+        <div class="user-info">
+          <strong id="user-display-name"></strong><br>
+          <span id="user-display-role"></span>
+        </div>
+        <button class="btn-logout" onclick="handleLogout()">ログアウト</button>
+      </div>
+    </nav>
+
+    <!-- メインコンテンツ -->
+    <main class="main-content">
+      <div class="page-header">
+        <h1 id="page-title">ダッシュボード</h1>
+      </div>
+      <div class="page-body" id="page-body">
+        <div class="loading"><div class="spinner"></div>読み込み中...</div>
+      </div>
+    </main>
+  </div>
+
+  <!-- モーダル -->
+  <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal('modal-overlay')">
+    <div class="modal" id="modal-content"></div>
+  </div>
+
+  <!-- トースト -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <?!= include('JavaScript'); ?>
+</body>
+</html>
